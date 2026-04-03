@@ -1,83 +1,68 @@
 package handlers
 
 import (
-	"net/http"
-	"sort"
-	"strconv"
-
+	"git-practice-gin/config"
 	"git-practice-gin/models"
+	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
 
-var books = make(map[int]models.Book)
-var authors = make(map[int]models.Author)
-var categories = make(map[int]models.Category)
-
-var nextBookID = 1
-var nextAuthorID = 1
-var nextCategoryID = 1
-
 func GetBooks(c *gin.Context) {
 	categoryFilter := c.Query("category")
-	pageStr := c.Query("page")
-	limitStr := c.Query("limit")
-	page := 1
-	if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
-		page = p
+	pageStr := c.DefaultQuery("page", "1")
+	limitStr := c.DefaultQuery("limit", "10")
+
+	page, _ := strconv.Atoi(pageStr)
+	limit, _ := strconv.Atoi(limitStr)
+	if page < 1 {
+		page = 1
 	}
-	limit := 10
-	if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 100 {
-		limit = l
+	if limit < 1 || limit > 100 {
+		limit = 10
 	}
-	var filtered []models.Book
-	for _, b := range books {
-		if categoryFilter != "" {
-			if cat, exists := categories[b.CategoryID]; !exists || cat.Name != categoryFilter {
-				continue
-			}
-		}
-		filtered = append(filtered, b)
+	var books []models.Book
+	query := config.DB.Preload("Author").Preload("Category")
+
+	if categoryFilter != "" {
+		query = query.Joins("JOIN categories ON categories.id = books.category_id").
+			Where("categories.name = ?", categoryFilter)
 	}
-	sort.Slice(filtered, func(i, j int) bool {
-		return filtered[i].ID < filtered[j].ID
-	})
-	start := (page - 1) * limit
-	end := start + limit
-	if start >= len(filtered) {
-		start = len(filtered)
-	}
-	if end > len(filtered) {
-		end = len(filtered)
-	}
-	c.JSON(http.StatusOK, filtered[start:end])
+	query.Order("books.id asc").Offset((page - 1) * limit).Limit(limit).Find(&books)
+	c.JSON(http.StatusOK, books)
 }
 
 func CreateBook(c *gin.Context) {
-	var book models.Book
-	if err := c.ShouldBindJSON(&book); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+	var input models.BookInput
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if book.Title == "" || book.Price <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Title is required and price must be > 0"})
+	book := models.Book{
+		Title:      input.Title,
+		AuthorID:   input.AuthorID,
+		CategoryID: input.CategoryID,
+		Price:      input.Price,
+	}
+	if err := config.DB.Create(&book).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	book.ID = nextBookID
-	nextBookID++
-	books[book.ID] = book
+	config.DB.Preload("Author").Preload("Category").First(&book, book.ID)
 	c.JSON(http.StatusCreated, book)
 }
 
 func GetBookByID(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := strconv.Atoi(idStr)
+	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
 		return
 	}
-	book, exists := books[id]
-	if !exists {
+
+	var book models.Book
+	if err := config.DB.Preload("Author").Preload("Category").First(&book, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Book not found"})
 		return
 	}
@@ -85,41 +70,43 @@ func GetBookByID(c *gin.Context) {
 }
 
 func UpdateBook(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := strconv.Atoi(idStr)
+	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
 		return
 	}
-	if _, exists := books[id]; !exists {
+	var book models.Book
+	if err := config.DB.First(&book, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Book not found"})
 		return
 	}
-	var updated models.Book
-	if err := c.ShouldBindJSON(&updated); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+	var input models.BookInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if updated.Title == "" || updated.Price <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Title is required and price must be > 0"})
+	book.Title = input.Title
+	book.AuthorID = input.AuthorID
+	book.CategoryID = input.CategoryID
+	book.Price = input.Price
+
+	if err := config.DB.Save(&book).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	updated.ID = id
-	books[id] = updated
-	c.JSON(http.StatusOK, updated)
+	config.DB.Preload("Author").Preload("Category").First(&book, book.ID)
+	c.JSON(http.StatusOK, book)
 }
 
 func DeleteBook(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := strconv.Atoi(idStr)
+	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
 		return
 	}
-	if _, exists := books[id]; !exists {
+	if err := config.DB.Delete(&models.Book{}, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Book not found"})
 		return
 	}
-	delete(books, id)
-	c.Status(http.StatusNoContent)
+	c.JSON(http.StatusOK, gin.H{"message": "Book deleted successfully"})
 }

@@ -1,33 +1,48 @@
 package handlers
 
 import (
-	"net/http"
-
+	"git-practice-gin/config"
 	"git-practice-gin/models"
+	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
 
 func GetCategories(c *gin.Context) {
-	var list []models.Category
-	for _, cat := range categories {
-		list = append(list, cat)
-	}
-	c.JSON(http.StatusOK, list)
+	var categories []models.Category
+	config.DB.Order("id asc").Find(&categories)
+	c.JSON(http.StatusOK, categories)
 }
 
 func CreateCategory(c *gin.Context) {
 	var category models.Category
+
 	if err := c.ShouldBindJSON(&category); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	if category.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Name required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Name is required"})
 		return
 	}
-	category.ID = nextCategoryID
-	nextCategoryID++
-	categories[category.ID] = category
+	if err := config.DB.Create(&category).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create category"})
+		return
+	}
 	c.JSON(http.StatusCreated, category)
+}
+
+func GetCategoryByID(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
+		return
+	}
+	var category models.Category
+	if err := config.DB.First(&category, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Category not found"})
+		return
+	}
+	c.JSON(http.StatusOK, category)
 }
